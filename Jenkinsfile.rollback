@@ -1,0 +1,89 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+    }
+
+    parameters {
+        string(
+            name: 'REVISION',
+            defaultValue: '',
+            description: 'Helm revision number to rollback to'
+        )
+    }
+
+    environment {
+        AWS_REGION   = 'us-east-1'
+        EKS_CLUSTER  = 'roboshop-dev-eks'
+        NAMESPACE    = 'mysql'
+        RELEASE_NAME = 'mysql'
+    }
+
+    stages {
+        stage('Configure Kubernetes') {
+            steps {
+                sh '''
+                    aws eks update-kubeconfig \
+                        --region "$AWS_REGION" \
+                        --name "$EKS_CLUSTER"
+
+                    kubectl get nodes
+                '''
+            }
+        }
+
+        stage('Helm History') {
+            steps {
+                sh '''
+                    helm history "$RELEASE_NAME" \
+                        --namespace "$NAMESPACE"
+                '''
+            }
+        }
+
+        stage('Rollback MySQL') {
+            steps {
+                script {
+                    if (!(params.REVISION ==~ /[1-9][0-9]*/)) {
+                        error('Please provide a valid Helm revision number')
+                    }
+                }
+
+                sh '''
+                    helm rollback "$RELEASE_NAME" "$REVISION" \
+                        --namespace "$NAMESPACE" \
+                        --wait \
+                        --timeout 10m
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                    helm history "$RELEASE_NAME" \
+                        --namespace "$NAMESPACE"
+
+                    kubectl get statefulset -n "$NAMESPACE"
+                    kubectl get pods -n "$NAMESPACE"
+                    kubectl get svc -n "$NAMESPACE"
+                    kubectl get pvc -n "$NAMESPACE"
+                    kubectl get externalsecret -n "$NAMESPACE"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'MySQL rollback successful'
+        }
+
+        failure {
+            echo 'MySQL rollback failed'
+        }
+    }
+}
